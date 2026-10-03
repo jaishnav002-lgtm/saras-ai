@@ -1,0 +1,30 @@
+# backend
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/.env
+backend/*.db
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+
+# frontend
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local
+frontend/tsconfig.tsbuildinfo
+# Python
+backend/venv/
+venv/
+__pycache__/
+*.pyc
+
+# Environment/secrets
+.env
+.env.*
+
+# Node
+node_modules/
+.next/
+
+# macOS
+.DS_Store
