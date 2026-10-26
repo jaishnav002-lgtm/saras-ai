@@ -65,6 +65,46 @@ class DocumentOut(BaseModel):
         from_attributes = True
 
 
+class RetrievalRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=10000)
+    top_k: Optional[int] = Field(default=None, ge=1, le=100)
+
+
+class RetrievalChunkOut(BaseModel):
+    chunk_id: str
+    document_id: str
+    filename: str
+    page_number: Optional[int]
+    chunk_index: int
+    content: str
+    score: float
+    semantic_rank: Optional[int] = None
+    keyword_rank: Optional[int] = None
+
+
+class RetrievalResponse(BaseModel):
+    results: List[RetrievalChunkOut]
+    cached: bool = False
+
+
+class AnswerRequest(RetrievalRequest):
+    pass
+
+
+class AnswerSourceOut(BaseModel):
+    chunk_id: str
+    document_id: str
+    subject_id: str
+    filename: str
+    page_number: Optional[int]
+
+
+class GroundedAnswerResponse(BaseModel):
+    answer: str
+    sources: List[AnswerSourceOut]
+    cached: bool = False
+
+
 # ---- Timetable import ----
 class ExamConfidence(BaseModel):
     subject: Optional[float] = None

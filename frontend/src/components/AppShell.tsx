@@ -64,6 +64,14 @@ function NotesIcon({ className = "w-4 h-4" }: { className?: string }) {
   );
 }
 
+function IntelligenceIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8} aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2.25M12 18.75V21M3 12h2.25M18.75 12H21M5.64 5.64l1.59 1.59m9.54 9.54 1.59 1.59m0-12.72-1.59 1.59m-9.54 9.54-1.59 1.59M12 7.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9Z" />
+    </svg>
+  );
+}
+
 function LogoutIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
@@ -411,6 +419,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   // Determine current active section
   const isDashboard = pathname === "/dashboard";
+  const isIntelligence = pathname === "/intelligence";
   const isSubjectPage = pathname?.startsWith("/subjects/");
   const activeSubjectId = isSubjectPage ? pathname.split("/")[2] : null;
 
@@ -496,6 +505,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             >
               <HomeIcon className="w-4 h-4 shrink-0" />
               <span>Home</span>
+            </Link>
+
+            <Link
+              href="/intelligence"
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] transition-colors ${
+                isIntelligence
+                  ? "bg-[#1e1e1e] text-white font-medium shadow-inner"
+                  : "text-neutral-400 hover:text-white hover:bg-[#161616]"
+              }`}
+            >
+              <IntelligenceIcon className="w-4 h-4 shrink-0" />
+              <span>S Intelligence</span>
             </Link>
 
             <button

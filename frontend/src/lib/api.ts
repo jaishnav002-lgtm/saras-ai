@@ -106,6 +106,28 @@ export function deleteSubject(id: string) {
   return request<void>(`/api/subjects/${id}`, { method: "DELETE" });
 }
 
+// ---- S Intelligence ----
+export type AnswerSource = {
+  chunk_id: string;
+  document_id: string;
+  subject_id: string;
+  filename: string;
+  page_number: number | null;
+};
+
+export type GroundedAnswer = {
+  answer: string;
+  sources: AnswerSource[];
+  cached: boolean;
+};
+
+export function answerSubjectQuestion(subjectId: string, question: string) {
+  return request<GroundedAnswer>(`/api/subjects/${subjectId}/answer`, {
+    method: "POST",
+    body: JSON.stringify({ question }),
+  });
+}
+
 // ---- Documents ----
 export type Document = {
   id: string;

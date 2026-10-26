@@ -5,6 +5,11 @@ from sqlalchemy import func
 from app.database import get_db
 from app import models, schemas
 from app.auth import get_current_user
+from app.services.retrieval import HybridRetrievalService
+from app.services.retrieval_cache import RetrievalCache
+from app.services.answering import GroundedAnswerService
+from app.services.answer_cache import AnswerCache
+from app.services.exceptions import RAGServiceError
 
 router = APIRouter(prefix="/api/subjects", tags=["subjects"])
 
@@ -68,6 +73,39 @@ def get_subject(
     return _to_subject_out(subject)
 
 
+@router.post("/{subject_id}/retrieve", response_model=schemas.RetrievalResponse)
+def retrieve_subject_chunks(
+    subject_id: str,
+    payload: schemas.RetrievalRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    # Validate ownership before constructing either keyword or semantic ranking.
+    get_owned_subject(subject_id, db, current_user)
+    results, cached = HybridRetrievalService().retrieve(
+        payload.question, subject_id, current_user.id, db, payload.top_k
+    )
+    return {"results": results, "cached": cached}
+
+
+@router.post("/{subject_id}/answer", response_model=schemas.GroundedAnswerResponse)
+def answer_subject_question(
+    subject_id: str,
+    payload: schemas.AnswerRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    get_owned_subject(subject_id, db, current_user)
+    try:
+        answer, sources, cached = GroundedAnswerService().answer(
+            payload.question, subject_id, current_user.id, db, payload.top_k
+        )
+    except RAGServiceError as exc:
+        # Provider failures are safe diagnostic messages and never cache partial output.
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {"answer": answer, "sources": sources, "cached": cached}
+
+
 @router.delete("/{subject_id}")
 def delete_subject(
     subject_id: str,
@@ -75,6 +113,8 @@ def delete_subject(
     current_user: models.User = Depends(get_current_user),
 ):
     subject = get_owned_subject(subject_id, db, current_user)
+    RetrievalCache().invalidate_subject(db, subject_id)
+    AnswerCache().invalidate_subject(db, subject_id)
     db.delete(subject)
     db.commit()
     return {"detail": "Subject deleted"}

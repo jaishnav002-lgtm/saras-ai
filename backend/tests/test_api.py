@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from unittest.mock import patch
 
 from app.main import app
 from app.database import Base, get_db
@@ -43,6 +44,13 @@ def setup_db():
 
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def mock_route_indexing():
+    """API document tests must not depend on a live embedding provider."""
+    with patch("app.routers.documents.DocumentEmbeddingIndexer.index_chunks", return_value=0):
+        yield
 
 
 def signup(email="alice@example.com", password="password123", name="Alice"):
@@ -189,6 +197,102 @@ def test_docx_upload_and_extraction():
     other_headers = _auth_header("intruder@example.com")
     r_forbidden = client.get(f"/api/documents/{doc_id}/file", headers=other_headers)
     assert r_forbidden.status_code == 403
+
+
+def test_answer_endpoint_returns_structured_sources_and_enforces_subject_ownership():
+    owner_headers = _auth_header("answer-owner@example.com")
+    subject_response = client.post(
+        "/api/subjects", json={"name": "Databases"}, headers=owner_headers
+    )
+    subject_id = subject_response.json()["id"]
+    source = {
+        "chunk_id": "chunk-1", "document_id": "document-1", "subject_id": subject_id,
+        "filename": "normalization.pdf", "page_number": 4,
+    }
+
+    with patch(
+        "app.routers.subjects.GroundedAnswerService.answer",
+        return_value=("Third normal form removes transitive dependencies.", [source], False),
+    ) as answer:
+        response = client.post(
+            f"/api/subjects/{subject_id}/answer",
+            json={"question": "What is third normal form?"},
+            headers=owner_headers,
+        )
+        assert response.status_code == 200
+        assert response.json() == {
+            "answer": "Third normal form removes transitive dependencies.",
+            "sources": [source],
+            "cached": False,
+        }
+        assert answer.call_args.args[0] == "What is third normal form?"
+        assert answer.call_args.args[1] == subject_id
+
+    other_headers = _auth_header("answer-intruder@example.com")
+    with patch("app.routers.subjects.GroundedAnswerService.answer") as answer:
+        forbidden = client.post(
+            f"/api/subjects/{subject_id}/answer",
+            json={"question": "Private question"},
+            headers=other_headers,
+        )
+        assert forbidden.status_code == 403
+        answer.assert_not_called()
+
+    # RAG service/provider failure produces a safe 503 response
+    from app.services.exceptions import RAGServiceError
+    with patch(
+        "app.routers.subjects.GroundedAnswerService.answer",
+        side_effect=RAGServiceError("Provider connection timed out"),
+    ):
+        err_response = client.post(
+            f"/api/subjects/{subject_id}/answer",
+            json={"question": "What is third normal form?"},
+            headers=owner_headers,
+        )
+        assert err_response.status_code == 503
+        assert "Provider connection timed out" in err_response.json()["detail"]
+
+
+def test_upload_persists_chunks_when_indexing_fails():
+    import docx
+    from app.models import DocumentChunk
+
+    headers = _auth_header("chunk-owner@example.com")
+    subject_response = client.post(
+        "/api/subjects", json={"name": "Compilers"}, headers=headers
+    )
+    subject_id = subject_response.json()["id"]
+
+    doc = docx.Document()
+    doc.add_paragraph("Lexical analysis produces tokens from characters.")
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+
+    with patch(
+        "app.routers.documents.DocumentEmbeddingIndexer.index_chunks",
+        side_effect=RuntimeError("Nemotron service offline"),
+    ):
+        response = client.post(
+            f"/api/subjects/{subject_id}/documents",
+            files={"file": ("lexer.docx", buf, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        doc_data = response.json()
+        assert doc_data["status"] == "processed"
+        assert "Indexing pending: Nemotron service offline" in doc_data["error_message"]
+
+        # Ensure chunks were saved to DB despite indexing failure
+        db = TestingSessionLocal()
+        try:
+            chunks = db.query(DocumentChunk).filter(DocumentChunk.document_id == doc_data["id"]).all()
+            assert len(chunks) >= 1
+            assert chunks[0].status == "ingested"
+            assert "Lexical analysis" in chunks[0].content
+        finally:
+            db.close()
+
 
 
 def test_pptx_upload_and_visual_slides_parsing():

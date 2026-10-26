@@ -10,6 +10,11 @@ from app.auth import get_current_user
 from app.config import settings
 from app.routers.subjects import get_owned_subject
 from app.extraction import extract_text
+from app.services.ingestion import DocumentIngestionService
+from app.services.indexing import DocumentEmbeddingIndexer
+from app.services.exceptions import UnextractableDocumentError
+from app.services.retrieval_cache import RetrievalCache
+from app.services.answer_cache import AnswerCache
 
 router = APIRouter(tags=["documents"])
 
@@ -78,22 +83,45 @@ def upload_document(
     db.commit()
     db.refresh(document)
 
-    # Synchronous extraction (fine for a small local prototype).
+    # Synchronous extraction and RAG chunk ingestion. Indexing is deliberately
+    # a separate stage: a transient provider failure must not discard usable
+    # extracted chunks, which the idempotent backfill can index later.
     try:
         result = extract_text(storage_path, ext)
+        if not result.has_extractable_text():
+            raise UnextractableDocumentError(
+                f"Document '{file.filename}' contains no extractable text. "
+                f"The file may be empty or contain only scanned images without OCR text."
+            )
         document.status = "processed"
         document.page_or_slide_count = result.unit_count
         document.extracted_preview = result.full_text[:1000]
         document.extracted_text = result.full_text
+
+        # Ingest chunks with metadata retention and idempotency
+        ingestion_service = DocumentIngestionService()
+        chunks = ingestion_service.ingest_document(
+            document=document,
+            db=db,
+            extraction_result=result,
+            owner_id=current_user.id,
+        )
     except Exception as exc:  # noqa: BLE001
         document.status = "failed"
         document.error_message = str(exc)
+    else:
+        try:
+            # Incrementally index only missing or changed stable chunks. The
+            # indexer reuses the persistent embedding cache and does not rebuild.
+            DocumentEmbeddingIndexer().index_chunks(chunks, db)
+        except Exception as exc:  # noqa: BLE001
+            # Keep extraction successful and chunks pending for safe backfill.
+            document.status = "processed"
+            document.error_message = f"Indexing pending: {str(exc)}"
 
     db.commit()
     db.refresh(document)
     return document
-
-
 @router.get("/api/documents/{document_id}", response_model=schemas.DocumentOut)
 def get_document(
     document_id: str,
@@ -202,6 +230,14 @@ def delete_document(
         raise HTTPException(status_code=404, detail="Document not found")
     # Ownership check via parent subject
     get_owned_subject(document.subject_id, db, current_user)
+
+    # Remove persisted vectors while chunk IDs are still available. This does
+    # not make an inference request and is safe when the document was never indexed.
+    chunk_ids = [chunk.id for chunk in document.chunks]
+    if chunk_ids:
+        DocumentEmbeddingIndexer().remove_chunks(document.subject_id, chunk_ids)
+    RetrievalCache().invalidate_subject(db, document.subject_id)
+    AnswerCache().invalidate_subject(db, document.subject_id)
 
     if os.path.exists(document.storage_path):
         os.remove(document.storage_path)
